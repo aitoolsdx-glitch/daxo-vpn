@@ -1,15 +1,29 @@
 import asyncio
 import sqlite3
-import os  # Добавь эту строку обязательно!
+import os
+import threading
+import http.server
+import socketserver
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-# --- НАСТРОЙКИ (БЕРЕМ ИЗ ПАНЕЛИ RENDER) ---
-API_TOKEN = os.getenv('BOT_TOKEN')
-CRYPTO_TOKEN = os.getenv('CRYPTO_TOKEN')
-ADMIN_ID = 5476069446  # ID можно оставить так, это не секрет
+# --- СЕРВЕР-ОБМАНКА ДЛЯ RENDER ---
+def run_dummy_server():
+    # Render требует, чтобы на порту 8080 что-то "жило"
+    port = int(os.environ.get("PORT", 8080))
+    handler = http.server.SimpleHTTPRequestHandler
+    # Уменьшаем таймаут, чтобы не блокировать систему
+    with socketserver.TCPServer(("", port), handler) as httpd:
+        print(f"DEBUG: Dummy server started on port {port}")
+        httpd.serve_forever()
 
+# Запускаем обманку в отдельном потоке, чтобы она не мешала боту
+threading.Thread(target=run_dummy_server, daemon=True).start()
+
+# --- НАСТРОЙКИ (БЕРЕМ ИЗ ENV) ---
+API_TOKEN = os.getenv('BOT_TOKEN')
+ADMIN_ID = 5476069446  # Твой ID
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
@@ -23,59 +37,54 @@ db.commit()
 
 # --- КЛАВИАТУРЫ ---
 def main_kb():
-    return InlineKeyboardMarkup(inline_keyboard=[
+    buttons = [
         [InlineKeyboardButton(text="⚡ Получить VPN", callback_data="get_vpn")],
-        [InlineKeyboardButton(text="💎 Купить Premium (Crypto)", callback_data="buy_premium")],
-        [InlineKeyboardButton(text="📊 Профиль", callback_data="profile")]
-    ])
+        [InlineKeyboardButton(text="💎 Купить Premium", callback_data="buy_premium")],
+        [InlineKeyboardButton(text="📊 Мой профиль", callback_data="profile")]
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
-# --- ЛОГИКА ОПЛАТЫ (ЭМУЛЯЦИЯ ЧЕРЕЗ КНОПКУ) ---
-@dp.callback_query(F.data == "buy_premium")
-async def pay_process(call: CallbackQuery):
-    # Здесь логика создания чека через API CryptoPay (упрощено для работы)
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💳 Оплатить 5$ (USDT)", url="https://t.me/CryptoBot?start=test")],
-        [InlineKeyboardButton(text="✅ Проверить оплату", callback_data="check_pay")]
-    ])
-    await call.message.answer("💎 **Покупка Premium доступа**\n\nПосле оплаты ты получишь доступ к VIP-серверам с низкой задержкой.", reply_markup=kb)
+# --- ХЕНДЛЕРЫ ---
+@dp.message(Command("start"))
+async def start_cmd(message: types.Message):
+    cur.execute("INSERT OR IGNORE INTO users (id) VALUES (?)", (message.from_user.id,))
+    db.commit()
+    await message.answer(f"Привет, {message.from_user.first_name}! Это **CHIIP VPN**.\n\nНажми кнопку ниже, чтобы получить доступ.", reply_markup=main_kb())
 
-@dp.callback_query(F.data == "check_pay")
-async def check_pay(call: CallbackQuery):
-    # Тут должна быть проверка через requests.get(CRYPTO_PAY_API)
-    await call.answer("⏳ Платеж обрабатывается или не найден. Попробуй позже.", show_alert=True)
-
-# --- ЛОГИКА ВЫДАЧИ ---
 @dp.callback_query(F.data == "get_vpn")
 async def send_vpn(call: CallbackQuery):
     cur.execute("SELECT config FROM keys ORDER BY RANDOM() LIMIT 1")
-    res = cur.fetchone()
-    if res:
-        await call.message.answer(f"🚀 **Твой ключ готов:**\n\n`{res[0]}`\n\nСкопируй и импортируй в v2rayNG / Shadowsocks.")
+    key = cur.fetchone()
+    if key:
+        await call.message.answer(f"Твой ключ доступа:\n\n`{key[0]}`\n\nСкопируй его в приложение V2Ray/v2rayNG.", parse_mode="Markdown")
     else:
-        await call.message.answer("❌ Свободные ключи закончились. Напиши @Danilo_191")
+        await call.message.answer("❌ Ключи закончились. Админ скоро добавит новые!")
+    await call.answer()
 
-# --- АДМИН ПАНЕЛЬ ---
-@dp.message(Command("admin"))
-async def admin_panel(message: types.Message):
-    if message.from_id != ADMIN_ID: return
-    kb = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📈 Юзеры", callback_data="a_stats"), InlineKeyboardButton(text="🔑 Ключи", callback_data="a_keys")],
-        [InlineKeyboardButton(text="📢 Рассылка", callback_data="a_bc")],
-        [InlineKeyboardButton(text="➕ Добавить VLESS", callback_data="a_add")]
-    ])
-    await message.answer("🛠 **Daxo Control Panel**", reply_markup=kb)
+@dp.callback_query(F.data == "profile")
+async def show_profile(call: CallbackQuery):
+    cur.execute("SELECT status FROM users WHERE id = ?", (call.from_user.id,))
+    status = cur.fetchone()[0]
+    await call.message.answer(f"👤 Профиль: {call.from_user.first_name}\n🔓 Статус: {status.upper()}")
+    await call.answer()
 
-# Добавление ключей (просто отправь боту ссылку если ты админ)
-@dp.message(F.text.regexp(r"(vless|vmess|ss)://"))
-async def add_key_auto(message: types.Message):
-    if message.from_id != ADMIN_ID: return
-    cur.execute("INSERT INTO keys (config, type) VALUES (?, ?)", (message.text, "premium"))
-    db.commit()
-    await message.answer("✅ Ключ добавлен в базу системы!")
+# --- АДМИН-ПАНЕЛЬ (ДОБАВЛЕНИЕ КЛЮЧЕЙ) ---
+@dp.message(F.text.startswith("vless://") | F.text.startswith("vmess://") | F.text.startswith("ss://"))
+async def add_key(message: types.Message):
+    if message.from_user.id == ADMIN_ID:
+        cur.execute("INSERT INTO keys (config) VALUES (?)", (message.text,))
+        db.commit()
+        await message.answer("✅ Ключ успешно добавлен в базу!")
+    else:
+        await message.answer("У тебя нет прав для добавления ключей.")
 
-# Запуск
+# --- ЗАПУСК ---
 async def main():
-    await dp.start_polling(bot)
+    print("--- CHIIP SYSTEM ONLINE ---")
+    try:
+        await dp.start_polling(bot)
+    finally:
+        await bot.session.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
