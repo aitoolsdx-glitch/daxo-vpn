@@ -1,13 +1,15 @@
 import asyncio
 import sqlite3
+import os  # Добавь эту строку обязательно!
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 
-# --- НАСТРОЙКИ (ВВЕДИ СВОИ ДАННЫЕ) ---
-API_TOKEN = 'ТВОЙ_ТОКЕН_БОТА'
-CRYPTO_TOKEN = 'ТВОЙ_ТОКЕН_ИЗ_@CryptoBot' # Получи в @CryptoTestnetBot или @CryptoPay
-ADMIN_ID = 5476069446
+# --- НАСТРОЙКИ (БЕРЕМ ИЗ ПАНЕЛИ RENDER) ---
+API_TOKEN = os.getenv('BOT_TOKEN')
+CRYPTO_TOKEN = os.getenv('CRYPTO_TOKEN')
+ADMIN_ID = 5476069446  # ID можно оставить так, это не секрет
+
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
